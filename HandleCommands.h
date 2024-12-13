@@ -25,7 +25,7 @@ void readHandleCommands() {
   }
 }
 */
-
+/*
 void separateTextAndNumber(String input, String& textPart, String& numberPart) {
   input.trim();  // Remove any leading/trailing whitespace or newline characters
 
@@ -57,7 +57,49 @@ void separateTextAndNumber(String input, String& textPart, String& numberPart) {
   }
 }
 
+*/
 
+void separateTextAndNumber(const String &input, String &textPart, String &numberPart) {
+    int i = 0;
+
+    // Extract the text part (letters only)
+    while (i < input.length() && isAlpha(input[i])) {
+        textPart += input[i++];
+    }
+
+    // Handle negative sign as part of the number
+    if (i < input.length() && input[i] == '-') {
+        // Check if there's a valid number following the '-'
+        if (i + 1 < input.length() && isDigit(input[i + 1])) {
+            numberPart = input.substring(i); // Take the rest as the number part
+        } else {
+            textPart += input[i++]; // Treat the '-' as part of the text
+        }
+    } else {
+        numberPart = input.substring(i); // Take the rest as the number part
+    }
+}
+
+/*void separateTextAndNumber(String &input, String &commandPart, String &valuePart) {
+  int numIndex = -1;
+  
+  // Find the index of the first digit
+  for (int i = 0; i < input.length(); i++) {
+    if (isdigit(input[i])) {
+      numIndex = i;
+      break;
+    }
+  }
+  
+  // If no digit was found, set numIndex to input.length()
+  if (numIndex == -1) {
+    numIndex = input.length();
+  }
+  
+  // Split the string at the first digit
+  commandPart = input.substring(0, numIndex);
+  valuePart = input.substring(numIndex);
+}
 
 
 // Function to parse the special string format into an array of substrings
@@ -86,7 +128,7 @@ int parseSpecialString(String input, String parts[], int maxParts) {
   }
 
   return partIndex;  // Return the number of parts parsed
-}
+}*/
 
 int parseString(String input, String parts[], int maxParts) {
   int partIndex = 0;

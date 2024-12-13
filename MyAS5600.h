@@ -1,10 +1,17 @@
 #ifndef AS5600ENCODER_H
 #define AS5600ENCODER_H
-
+//ulozeno
 #include <Wire.h>
 #include "MyMath.h"
 
 #define AS5600_ADDRESS 0x36
+#define TCA_ADDRESS 0x70 // Default address of TCA9548A
+
+void tcaSelect(uint8_t channel) {
+  Wire.beginTransmission(TCA_ADDRESS);
+  Wire.write(1 << channel); // Select the channel
+  Wire.endTransmission();
+}
 
 class AS5600Encoder {
 private:
@@ -30,7 +37,7 @@ private:
   unsigned long uLastUpdateTime;
 
   bool dir;
-  int wir;
+  uint8_t tcaChannel; // Channel on the TCA9548A multiplexer
 
   // Non-blocking read variables
   unsigned long lastMicrosNBER;
@@ -78,19 +85,13 @@ public:
     }
   }
 
-  void begin(int res, bool _encDir, int _wir) {
-    wir = _wir;
-    dir = _encDir;
-    if(wir == 0) {
-      Wire.begin();
-      Wire.setClock(100000);
-    } 
-    else if (wir == 1) {
-      Wire2.begin();
-      Wire2.setClock(100000);
-    }
+  void begin(int res, uint8_t channel) {
+    Wire.begin();
+    Wire.setClock(100000);
+    tcaChannel = channel; // Save the TCA channel for future use
+    tcaSelect(tcaChannel); // Switch to the correct channel
 
-    readRawPos();
+    //readRawPos(); // Initial read to sync state
     resolution = res;
     ready = true;
     lastRawPos12b = rawPos12b;
@@ -101,99 +102,63 @@ public:
 
 
   void readRawPosNB() {
-    static uint8_t highByte = 0;
-    static uint8_t lowByte = 0;
+    tcaSelect(tcaChannel);  // Select the TCA channel before I2C operations
     
-
-    switch (stateNBER) {
-      case IDLE:
-        // Wait for the next cycle
-        if (micros() - lastMicrosNBER >= delayTimeNBER) {
-          stateNBER = SEND_REQUEST;
-        }
-        break;
-
-      case SEND_REQUEST:
-        if (wir == 0) {
-          Wire.beginTransmission(AS5600_ADDRESS);
-          Wire.write(0x0C);  // Register to read high byte of angle
-          Wire.endTransmission();
-        } else if (wir == 1) {
-          Wire2.beginTransmission(AS5600_ADDRESS);
-          Wire2.write(0x0C);  // Register to read high byte of angle
-          Wire2.endTransmission();
-        }
-        lastMicrosNBER = micros();
-        stateNBER = REQUEST_DATA;
-        break;
-
-      case REQUEST_DATA:
-        if (micros() - lastMicrosNBER >= delayTimeNBER) {
-          if (wir == 0) {
-            Wire.requestFrom(AS5600_ADDRESS, 2);
-          } else if (wir == 1) {
-            Wire2.requestFrom(AS5600_ADDRESS, 2);
-          }
-          lastMicrosNBER = micros();
-          stateNBER = READ_DATA;
-        }
-        break;
-
-      case READ_DATA:
-        if ((wir == 0 && Wire.available() >= 2) || (wir == 1 && Wire2.available() >= 2)) {
-          if (wir == 0) {
-            highByte = Wire.read();  // High byte
-            lowByte = Wire.read();   // Low byte
-          } else if (wir == 1) {
-            highByte = Wire2.read();  // High byte
-            lowByte = Wire2.read();   // Low byte
-          }
-
-          rawPos12b = (highByte << 8) | lowByte;
-          wholeRawPosRead = true;
-
-          if (!dir) {
-            rawPos12b = 4095 - rawPos12b;
-          }
-          stateNBER = IDLE;
-        }
-        break;
+    // Begin the read process if enough time has passed since the last read
+    if (micros() - lastMicrosNBER >= delayTimeNBER) {
+        Wire.beginTransmission(AS5600_ADDRESS);  // Begin I2C communication with the AS5600
+        Wire.write(0x0C);  // Command to read the high byte of the angle
+        Wire.endTransmission();
+        lastMicrosNBER = micros();  // Store the time when the request was made
+        stateNBER = REQUEST_DATA;  // Move to the next state to request data
     }
+
+    // Request data from the AS5600 if it's ready
+    if (stateNBER == REQUEST_DATA) {
+        Wire.requestFrom(AS5600_ADDRESS, 2);  // Request 2 bytes (high and low byte)
+        stateNBER = READ_DATA;  // Move to read data state
+    }
+
+    // Read the data if available
+    if (stateNBER == READ_DATA) {
+        if (Wire.available() >= 2) {
+            uint8_t highByte = Wire.read();  // Read the high byte of the position
+            uint8_t lowByte = Wire.read();   // Read the low byte of the position
+            rawPos12b = (highByte << 8) | lowByte;  // Combine the two bytes into a 12-bit position value
+
+            if (!dir) {
+                rawPos12b = 4095 - rawPos12b;  // If direction is inverted, adjust the position
+            }
+
+            wholeRawPosRead = true;  // Mark that we successfully read the position
+            stateNBER = IDLE;  // Reset the state machine to idle, ready for the next read
+        }
+    }
+
+    /*
+    Serial.print("readRawPosNB: ");
+    Serial.println(rawPos12b);
+    */
   }
 
+
+
   void readRawPos() {
-    //Wire.begin();
-    //Wire.setClock(100000);
+    tcaSelect(tcaChannel); // Select the correct TCA channel
+    Wire.beginTransmission(AS5600_ADDRESS);
+    Wire.write(0x0C);  // Register to read high byte of angle
+    Wire.endTransmission();
+    Wire.requestFrom(AS5600_ADDRESS, 2);
 
-    rawPos12b = 0;
-
-    if(wir == 0) {
-      Wire.beginTransmission(AS5600_ADDRESS);
-      Wire.write(0x0C);  // Register to read high byte of angle
-      Wire.endTransmission();
-      Wire.requestFrom(AS5600_ADDRESS, 2);
-
-      if (Wire.available() == 2) {
-        rawPos12b = Wire.read() << 8;  // High byte
-        rawPos12b |= Wire.read();      // Low byte
+    if (Wire.available() == 2) {
+      rawPos12b = Wire.read() << 8 | Wire.read();
+      if (!dir) {
+        rawPos12b = 4095 - rawPos12b; // Adjust for direction
       }
     }
-    else if(wir == 1){
-      Wire2.beginTransmission(AS5600_ADDRESS);
-      Wire2.write(0x0C);  // Register to read high byte of angle
-      Wire2.endTransmission();
-      Wire2.requestFrom(AS5600_ADDRESS, 2);
-
-      if (Wire2.available() == 2) {
-        rawPos12b = Wire2.read() << 8;  // High byte
-        rawPos12b |= Wire2.read();      // Low byte
-      }
-    }
-    if(!dir) {
-      rawPos12b = 4095 - rawPos12b;
-    }
-    
-    
+    /*Serial.print("readRawPos: ");
+    Serial.println(rawPos12b);
+    */
   }
 
   void setZero(uint16_t rpos) {
@@ -210,11 +175,10 @@ public:
   void updateNB(unsigned int del) {
     delayTimeNBER = del;
     readRawPosNB();
-    if(wholeRawPosRead) {
+    if (wholeRawPosRead) {
       calcRawSpeed12b();
       wholeRawPosRead = false;
     }
-    
   }
 
   void update() {
@@ -222,7 +186,8 @@ public:
     //#error AS5600 not initialized
     //#endif
     //readRawPosNonBlocking();
-    readRawPosNB();
+    readRawPos(); //<==========
+    //readRawPos();
     calcRawSpeed12b();
 
     //compPos();
@@ -313,7 +278,7 @@ public:
 
   float getRawSpeed12b(String opt) {
     if (opt == "deg") {
-      return (rawPos12b / 4096) * 360;
+      return (rawSpeed12b / 4096) * 360;
     } else if (opt == "raw") {
       return rawSpeed12b;
     } else {
