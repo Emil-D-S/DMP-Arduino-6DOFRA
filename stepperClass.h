@@ -22,9 +22,9 @@ private:
   bool isCalibrated = false;
 
   float stepResolution;
-  float speed;  // Current speed
+  double speed;  // Current speed
   float maxSpeed;
-  float acc;
+  double acc;
   float maxAcc;
 
   unsigned long lastStepTime = 0;
@@ -35,6 +35,7 @@ private:
   short globDistToGo;
   int stepsToGo;
   int stepsToAcc;
+  double stepsToDecel;
   int minLim;
   int maxLim;
   bool dir;
@@ -175,7 +176,7 @@ public:
   void stepNB(unsigned long _syncMicros) {
     if (speed == 0) return;
 
-    unsigned long period = 1000000 / abs((int)speed);
+    unsigned long period = (int)(1000000 / abs(speed));
 
     if (speed >= 0) {
       dir = 0;
@@ -498,8 +499,86 @@ public:
       stepsToGo = targetPosition - position;
 
       if (stepsToGo != 0) {
+        acc = (stepsToGo > 0) ? maxAcc : -maxAcc;
+        
+        long deltaAccUpdateMicros = syncMicros - lastAccUpdateMicros;
+        double kFixed = deltaAccUpdateMicros / 1000000.0; // puvodne 1000000.0
+        //double kFixed = max(deltaAccUpdateMicros, 200) / 1000000.0;
+        acc *= kFixed;
+        stepsToDecel = sq(speed) / (2 * abs(maxAcc));
+        stepsToDecel *= (speed > 0) ? 1 : -1;
 
-          = (stepsToGo > 0) ? maxAcc : -maxAcc;
+        double peakSpeed = sqrt(2 * abs(maxAcc) * abs(stepsToGo));
+        peakSpeed = constrain(peakSpeed, 0, maxSpeed);
+
+        if ((stepsToGo > 0 && stepsToGo <= stepsToDecel) || (stepsToGo < 0 && stepsToGo >= stepsToDecel)) {
+          speed -= acc; // Decelerate
+        } else //if (abs(speed) < peakSpeed) 
+        {
+          speed += acc;
+        }
+
+        speed = constrain(speed, -maxSpeed, maxSpeed);
+
+        /*if (abs(stepsToGo) <= 1) {
+          speed = 0;
+          position = targetPosition;
+        }*/
+      } else {
+        // No movement needed
+        acc = 0;
+        speed = 0;
+      }
+      lastAccUpdateMicros = syncMicros;
+      // Ensure the speed is within the allowed range
+      speed = constrain(speed, -maxSpeed, maxSpeed);
+
+      // Move the motor by one step based on the calculated speed
+      stepNB(syncMicros);  // This function should implement the step movement according to the current speed
+      //============
+
+
+      /*
+      targetPosition = constrain(targetPosition, minLim, maxLim);
+      stepsToGo = targetPosition - position;
+
+      if (stepsToGo != 0) {
+        // Determine acceleration direction based on the direction of the remaining steps
+        acc = (stepsToGo > 0) ? maxAcc : -maxAcc;
+        
+        // Calculate the number of steps required to decelerate to a stop
+        stepsToAcc = sq(maxSpeed) / (4 * abs(maxAcc));
+
+        // If we are close enough to the target, start decelerating
+        long deltaAccUpdateMicros = micros() - lastAccUpdateMicros;
+        double kFixed = deltaAccUpdateMicros / 1000000.0;
+        
+        if(abs(stepsToGo) > stepsToAcc) {
+          speed += acc*kFixed;
+        }
+        else if(abs(stepsToGo) < stepsToAcc){
+          speed -= acc*kFixed;
+        } 
+        lastAccUpdateMicros = micros();
+      } 
+      else {
+        acc = 0;
+        speed = 0;
+      }
+
+      // Ensure the speed is within the allowed range
+      speed = constrain(speed, -maxSpeed, maxSpeed);
+
+      // Move the motor by one step based on the calculated speed
+      stepNB();  // This function should implement the step movement according to the current speed
+
+      /*
+      targetPosition = constrain(targetPosition, minLim, maxLim);
+      stepsToGo = targetPosition - position;
+
+      if (stepsToGo != 0) {
+
+        acc = (stepsToGo > 0) ? maxAcc : -maxAcc;
         long deltaAccUpdateMicros = syncMicros - lastAccUpdateMicros;
         double kFixed = deltaAccUpdateMicros / 1000000.0;
         double stepsToDecel = sq(speed) / (2 * abs(acc));
@@ -541,6 +620,8 @@ public:
 
       // Move the motor by one step based on the calculated speed
       stepNB(syncMicros);  // This function should implement the step movement according to the current speed
+      *///============
+
 
       /*
       targetPosition = constrain(targetPosition, minLim, maxLim);
@@ -739,8 +820,8 @@ public:
     Serial.print(" Dir: ");
     Serial.print(dir);
     Serial.print(" ");
-    Serial.print(" stepsToAcc: ");
-    Serial.print(stepsToAcc);
+    Serial.print(" stepsToDECEL: ");
+    Serial.print(stepsToDecel);
     Serial.print(" ");
     Serial.print(" speed/max: ");
     Serial.print(" ");
