@@ -39,6 +39,8 @@ private:
   int minLim;
   int maxLim;
   bool dir;
+
+  unsigned long ttm;
   //short avgStartPos12b = [16];
 
   //float targetAngleDeg;
@@ -53,6 +55,7 @@ private:
   bool encDir;
   bool swapDir;
   bool encReading = false;
+  bool ignoreLimits = false;
 
   int wir;
 
@@ -62,7 +65,7 @@ private:
 
 public:
 
-  StepperMotor(float resolution, int stepPin, int dirPin, int enablePin, float maxSpeed, float maxAcc, int minLim12b, int center12b, int maxLim12b, bool _encDir, uint8_t channel, bool swapDir) {
+  StepperMotor(float resolution, int stepPin, int dirPin, int enablePin, float maxSpeed, float maxAcc, int minLim12b, int center12b, int maxLim12b, bool _encDir, uint8_t channel, bool swapDir, bool ignoreLimits = 0) {
     this->stepPin = stepPin;
     this->dirPin = dirPin;
     this->enablePin = enablePin;
@@ -76,7 +79,7 @@ public:
     this->tcaChannel = channel;
     this->encDir = _encDir;
     this->swapDir = swapDir;
-
+    this->ignoreLimits = ignoreLimits;
     pinMode(stepPin, OUTPUT);
     pinMode(dirPin, OUTPUT);
     pinMode(enablePin, OUTPUT);
@@ -125,7 +128,7 @@ public:
     targetPosition = position + steps;
   }
 
-  void moveTo(long target, String opt) {
+  void moveTo(long target, String opt, unsigned long dt_millis = 0) {
     if (opt == "deg") {
       targetPosition = stepResolution * (target / 360.0);
     } else if (opt == "rad") {
@@ -134,6 +137,10 @@ public:
       targetPosition = target;
     } else {
       throw std::invalid_argument("Invalid option passed as argument");
+    }
+    if(dt_millis > 0)
+    {
+      ttm = dt_millis;
     }
   }
 
@@ -237,6 +244,182 @@ public:
 
   long lastAccUpdateMicros = 0;
 
+int getSignedDistanceWithoutCrossingLimits(int x, int minLim, int centerPos, int maxLim) {
+  // Normalize all positions to 0-4095 range
+  x = x & 0xFFF;
+  minLim = minLim & 0xFFF;
+  centerPos = centerPos & 0xFFF;
+  maxLim = maxLim & 0xFFF;
+  
+  // Calculate direct distance (positive and negative)
+  int directDist = centerPos - x;
+  int wrappedDist;
+  
+  // If direct distance is positive, wrapped distance should be negative
+  if (directDist >= 0) {
+    wrappedDist = -(4096 - directDist);
+  } else {
+    // If direct distance is negative, wrapped distance should be positive
+    wrappedDist = 4096 + directDist;
+  }
+  
+  // Check if x and centerPos are on different sides of a limit
+  bool crossesMinLim = false;
+  bool crossesMaxLim = false;
+  
+  // Helper function to check if a point is between two positions (inclusive)
+  auto isBetween = [](int value, int start, int end) {
+    if (start <= end) {
+      return value >= start && value <= end;
+    } else {
+      return value >= start || value <= end;
+    }
+  };
+  
+  // Check if path crosses limits
+  if (directDist >= 0) {
+    // Moving clockwise from x to centerPos
+    crossesMinLim = isBetween(minLim, x, centerPos);
+    crossesMaxLim = isBetween(maxLim, x, centerPos);
+  } else {
+    // Moving counterclockwise from x to centerPos
+    crossesMinLim = isBetween(minLim, centerPos, x);
+    crossesMaxLim = isBetween(maxLim, centerPos, x);
+  }
+  
+  // If both limits are crossed, use the path through the closer limit
+  if (crossesMinLim && crossesMaxLim) {
+    // Calculate distances to both limits from x
+    int distToMin = (x >= minLim) ? x - minLim : x + (4096 - minLim);
+    int distToMax = (x >= maxLim) ? x - maxLim : x + (4096 - maxLim);
+    
+    // Use the path through the closer limit
+    return (distToMin < distToMax) ? wrappedDist : directDist;
+  }
+  // If only one limit is crossed, use the path that doesn't cross it
+  else if (crossesMinLim || crossesMaxLim) {
+    return crossesMinLim ? wrappedDist : directDist;
+  }
+  // If no limits are crossed, use the shorter path
+  else {
+    return abs(directDist) <= abs(wrappedDist) ? directDist : wrappedDist;
+  }
+}
+
+
+
+
+
+/*
+int getSignedDistanceWithoutCrossingLimits(int x, int minLim, int centerPos, int maxLim) {
+  // Normalize positions to be within the valid range
+  x = (x + 4095 + 1) % (4095 + 1);
+  centerPos = (centerPos + 4095 + 1) % (4095 + 1);
+  minLim = (minLim + 4095 + 1) % (4095 + 1);
+  maxLim = (maxLim + 4095 + 1) % (4095 + 1);
+
+  // Check if x is within the valid range
+  if (minLim <= maxLim) {
+    if (x < minLim || x > maxLim) {
+      // Outside the range, calculate distance to the closest limit
+      int distanceToMin = (x < minLim) ? minLim - x: minLim + 4096 - x;
+      int distanceToMax = (x > maxLim) ? x - maxLim : x + 4096 - maxLim
+      //int closestLimit = (distanceToMin < distanceToMax) ? minLim : maxLim;
+      if (distanceToMax > distanceToMin)
+      {
+        return centerPos - x;
+      }
+      else
+      {
+
+      }
+      return (centerPos >= closestLimit) ? centerPos - closestLimit : -(closestLimit - centerPos);
+    } else if (centerPos < minLim || centerPos > maxLim) {
+      return 0; // Invalid center position
+    }
+    return centerPos - x;
+  } else {
+    // Wraparound case
+    bool xInValidRange = (x >= minLim || x <= maxLim);
+    bool centerInValidRange = (centerPos >= minLim || centerPos <= maxLim);
+
+    if (!xInValidRange) {
+      // Outside the range, calculate distance to the closest limit
+      int distanceToMin = (x >= minLim) ? x - minLim : 4095 + 1 - (minLim - x);
+      int distanceToMax = (x <= maxLim) ? maxLim - x : 4095 + 1 - (x - maxLim);
+      int closestLimit = (distanceToMin < distanceToMax) ? minLim : maxLim;
+      return (centerPos >= closestLimit) ? centerPos - closestLimit : -(closestLimit - centerPos);
+    } else if (!centerInValidRange) {
+      return 0; // Invalid center position
+    }
+
+    if (centerPos >= minLim) {
+      if (x >= minLim) {
+        return centerPos - x;
+      } else {
+        return -((4095 + 1 - centerPos) + x);
+      }
+    } else {
+      if (x <= maxLim) {
+        return centerPos - x;
+      } else {
+        return (4095 + 1 - x) + centerPos;
+      }
+    }
+  }
+}*/
+
+/*int getSignedDistanceWithoutCrossingLimits(int x, int minLim, int centerPos, int maxLim) {
+  // Normalize positions to be within the valid range
+  x = (x + 4095 + 1) % (4095 + 1);
+  centerPos = (centerPos + 4095 + 1) % (4095 + 1);
+  minLim = (minLim + 4095 + 1) % (4095 + 1);
+  maxLim = (maxLim + 4095 + 1) % (4095 + 1);
+
+  // Check if x is within the valid range
+  if (minLim <= maxLim) {
+    if (x < minLim || x > maxLim) {
+      // Outside the range, calculate distance to the closest limit
+      int distanceToMin = (x >= minLim) ? x - minLim : 4095 + 1 - (minLim - x);
+      int distanceToMax = (x <= maxLim) ? maxLim - x : 4095 + 1 - (x - maxLim);
+      int closestLimit = (distanceToMin < distanceToMax) ? minLim : maxLim;
+      return (centerPos >= closestLimit) ? centerPos - closestLimit : -(closestLimit - centerPos);
+    } else if (centerPos < minLim || centerPos > maxLim) {
+      return 0; // Invalid center position
+    }
+    return centerPos - x;
+  } else {
+    // Wraparound case
+    bool xInValidRange = (x >= minLim || x <= maxLim);
+    bool centerInValidRange = (centerPos >= minLim || centerPos <= maxLim);
+
+    if (!xInValidRange) {
+      // Outside the range, calculate distance to the closest limit
+      int distanceToMin = (x >= minLim) ? x - minLim : 4095 + 1 - (minLim - x);
+      int distanceToMax = (x <= maxLim) ? maxLim - x : 4095 + 1 - (x - maxLim);
+      int closestLimit = (distanceToMin < distanceToMax) ? minLim : maxLim;
+      return (centerPos >= closestLimit) ? centerPos - closestLimit : -(closestLimit - centerPos);
+    } else if (!centerInValidRange) {
+      return 0; // Invalid center position
+    }
+
+    if (centerPos >= minLim) {
+      if (x >= minLim) {
+        return centerPos - x;
+      } else {
+        return -((4095 + 1 - centerPos) + x);
+      }
+    } else {
+      if (x <= maxLim) {
+        return centerPos - x;
+      } else {
+        return (4095 + 1 - x) + centerPos;
+      }
+    }
+  }
+}
+*/
+
   void update(unsigned long syncMicros) {               // <== res = 134872.9
     //Serial.println("");
     //Serial.println(motorName);
@@ -308,7 +491,7 @@ public:
         short calPos12b = getMostFrequentValue(calEncPositions, calEncSamples);
 
         // Determine the direction of the path based on the limits
-        if (!wrapAround) {
+        /*if (!wrapAround) {
             // Normal case: minLim12b < maxLim12b
             if (calPos12b <= center12b) {
                 if (calPos12b >= minLim12b && center12b <= maxLim12b) {
@@ -338,9 +521,11 @@ public:
                     delta12b = center12b + 4096 - calPos12b;  // Long path via wraparound
                 }
             }
-        }
+        }*/
 
         // Map the adjusted delta12b to steps
+
+        delta12b = getSignedDistanceWithoutCrossingLimits(calPos12b, minLim12b, center12b, maxLim12b);
         long deltaSteps = map(delta12b, -4096, 4096, -stepResolution, stepResolution);
 
         // Apply the offset and move to the new position
@@ -389,7 +574,10 @@ public:
       encRevs = magEnc.getConvRevs("raw");
 
       // Constrain target position within limits
-      targetPosition = constrain(targetPosition, minLim, maxLim);
+      if(!ignoreLimits) {
+        targetPosition = constrain(targetPosition, minLim, maxLim);
+      }
+      
 
       stepsToAcc = speed*abs(speed) / (2 * abs(maxAcc));
 
@@ -495,6 +683,74 @@ public:
         magEnc.updateNB(5000);
       }
 
+      if(!ignoreLimits) {
+        targetPosition = constrain(targetPosition, minLim, maxLim);
+      }
+      
+      stepsToGo = targetPosition - position;
+
+      if (stepsToGo != 0) {
+        long deltaAccUpdateMicros = syncMicros - lastAccUpdateMicros;
+        double kFixed = deltaAccUpdateMicros / 1000000.0;
+
+        // Compute the total distance and adjust ttmMaxSpeed
+        double totalDistance = abs(stepsToGo);
+        double accelTime = maxSpeed / maxAcc; // Time to accelerate to maxSpeed at maxAcc
+        double accelDistance = 0.5 * maxAcc * sq(accelTime); // Distance covered during acceleration
+
+        double ttmMaxSpeed;
+        
+        if (ttm > 2 * accelTime) {
+          // Enough time for full acceleration, constant speed, and deceleration
+          double constantSpeedTime = ttm - 2 * accelTime;
+          ttmMaxSpeed = (totalDistance-2*accelDistance) / (constantSpeedTime);
+        } else {
+          // Not enough time for full constant speed; adjust speed to fit within ttm
+          ttmMaxSpeed = sqrt(totalDistance * maxAcc);
+        }
+        ttmMaxSpeed = constrain(ttmMaxSpeed, 0, maxSpeed);
+
+        // Determine acceleration or deceleration
+        acc = (stepsToGo > 0) ? maxAcc : -maxAcc;
+
+        // Determine the phase of motion
+        stepsToDecel = sq(speed) / (2 * abs(maxAcc));
+        stepsToDecel *= (speed > 0) ? 1 : -1;
+
+        if ((stepsToGo > 0 && stepsToGo <= stepsToDecel) || (stepsToGo < 0 && stepsToGo >= stepsToDecel)) {
+          // Deceleration phase
+          speed -= acc * kFixed;
+        } else if (abs(speed) < abs(ttmMaxSpeed)) {
+          // Acceleration phase
+          speed += acc * kFixed;
+        } else {
+          // Constant speed phase
+          speed = (stepsToGo > 0) ? ttmMaxSpeed : -ttmMaxSpeed;
+        }
+
+        // Constrain speed within allowed limits
+        speed = constrain(speed, -maxSpeed, maxSpeed);
+
+        // Check if close enough to stop
+        if (abs(stepsToGo) <= 1) {
+          speed = 0;
+          position = targetPosition;
+        }
+      } 
+      else 
+      {
+        // No movement needed
+        acc = 0;
+        speed = 0;
+      }
+
+      lastAccUpdateMicros = syncMicros;
+
+      // Move the motor by one step based on the calculated speed
+      stepNB(syncMicros);
+
+
+      /*
       targetPosition = constrain(targetPosition, minLim, maxLim);
       stepsToGo = targetPosition - position;
 
@@ -504,11 +760,22 @@ public:
         long deltaAccUpdateMicros = syncMicros - lastAccUpdateMicros;
         double kFixed = deltaAccUpdateMicros / 1000000.0; // puvodne 1000000.0
         //double kFixed = max(deltaAccUpdateMicros, 200) / 1000000.0;
+
+        if (ttm > 0) {
+          double totalDistance = abs(stepsToGo);
+          double requiredAcc = (2 * totalDistance) / (ttm * ttm);
+          acc = (stepsToGo > 0) ? requiredAcc : -requiredAcc;
+        } else {
+            acc = (stepsToGo > 0) ? maxAcc : -maxAcc;
+        }
+
         acc *= kFixed;
         stepsToDecel = sq(speed) / (2 * abs(maxAcc));
         stepsToDecel *= (speed > 0) ? 1 : -1;
 
-        double peakSpeed = sqrt(2 * abs(maxAcc) * abs(stepsToGo));
+
+        double peakSpeed = (ttm > 0) ? abs(stepsToGo) / ttm : sqrt(2 * abs(acc) * abs(stepsToGo));
+        //double peakSpeed = sqrt(2 * abs(maxAcc) * abs(stepsToGo));
         peakSpeed = constrain(peakSpeed, 0, maxSpeed);
 
         if ((stepsToGo > 0 && stepsToGo <= stepsToDecel) || (stepsToGo < 0 && stepsToGo >= stepsToDecel)) {
@@ -520,10 +787,11 @@ public:
 
         speed = constrain(speed, -maxSpeed, maxSpeed);
 
-        /*if (abs(stepsToGo) <= 1) {
+        if (abs(stepsToGo) <= 1) {
           speed = 0;
           position = targetPosition;
-        }*/
+        }
+
       } else {
         // No movement needed
         acc = 0;
@@ -536,7 +804,7 @@ public:
       // Move the motor by one step based on the calculated speed
       stepNB(syncMicros);  // This function should implement the step movement according to the current speed
       //============
-
+      */
 
       /*
       targetPosition = constrain(targetPosition, minLim, maxLim);
